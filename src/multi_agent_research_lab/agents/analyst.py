@@ -86,12 +86,12 @@ Be thorough and objective in your analysis."""
                 generation_span.update(
                     output=llm_response.content,
                     usage_details={
-                        "input_tokens": llm_response.input_tokens,
-                        "output_tokens": llm_response.output_tokens,
-                        "total_tokens": llm_response.input_tokens + llm_response.output_tokens
+                        "input": llm_response.input_tokens,
+                        "output": llm_response.output_tokens,
+                        "total": llm_response.input_tokens + llm_response.output_tokens
                     },
                     cost_details={
-                        "total_cost": llm_response.cost_usd
+                        "total": llm_response.cost_usd
                     }
                 )
             

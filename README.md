@@ -1,8 +1,38 @@
-# Lab 20: Multi-Agent Research System Starter
+# Lab 20: Multi-Agent Research System
 
-Starter repo cho bài lab **Multi-Agent Systems**: xây dựng hệ thống nghiên cứu gồm **Supervisor + Researcher + Analyst + Writer** và benchmark với single-agent baseline.
+Hệ thống nghiên cứu đa agent hoàn chỉnh với **Supervisor + Researcher + Analyst + Writer**, tích hợp Langfuse tracing và benchmark system.
 
-> Mục tiêu của repo này là cung cấp **production-grade skeleton** để học viên phát triển code cá nhân. Các phần logic quan trọng được để ở dạng `TODO` để học viên tự triển khai.
+> **Status**: ✅ Đã hoàn thành đầy đủ tất cả yêu cầu chức năng. Hệ thống production-ready với retry logic, fallback strategies, và comprehensive error handling.
+
+## Implementation Status
+
+### ✅ Hoàn thành (100%)
+
+| Component | Status | File |
+|---|:---:|---|
+| LLM Client với OpenAI | ✅ | `services/llm_client.py` |
+| Search Client với Tavily | ✅ | `services/search_client.py` |
+| Supervisor Routing Logic | ✅ | `agents/supervisor.py` |
+| Researcher Agent | ✅ | `agents/researcher.py` |
+| Analyst Agent | ✅ | `agents/analyst.py` |
+| Writer Agent | ✅ | `agents/writer.py` |
+| LangGraph Workflow | ✅ | `graph/workflow.py` |
+| Langfuse Tracing | ✅ | `observability/tracing.py` |
+| Benchmark System | ✅ | `evaluation/benchmark.py` |
+| Baseline Single-Agent | ✅ | `cli.py` |
+| Guardrails & Error Handling | ✅ | Tất cả agents |
+| CLI Commands | ✅ | `cli.py` |
+
+### 🎯 Features
+
+- ✅ Multi-agent workflow với conditional routing
+- ✅ Single-agent baseline để so sánh
+- ✅ Langfuse tracing với cost tracking
+- ✅ Comprehensive benchmark metrics
+- ✅ Retry logic với exponential backoff
+- ✅ Graceful degradation khi agent fail
+- ✅ Max iterations và timeout guards
+- ✅ Error accumulation và reporting
 
 ## Learning outcomes
 
@@ -65,39 +95,71 @@ cp .env.example .env
 
 ### 2. Cấu hình API keys
 
-Mở `.env` và điền key cần thiết.
+Mở `.env` và điền các API keys cần thiết:
 
 ```bash
-OPENAI_API_KEY=...
-# optional
-LANGSMITH_API_KEY=...
-TAVILY_API_KEY=...
+# Required - OpenAI API
+OPENAI_API_KEY=sk-...
+OPENAI_MODEL=gpt-4o-mini
+
+# Required - Tavily Search API
+TAVILY_API_KEY=tvly-...
+
+# Required - Langfuse Tracing
+LANGFUSE_PUBLIC_KEY=pk-lf-...
+LANGFUSE_SECRET_KEY=sk-lf-...
+LANGFUSE_HOST=https://cloud.langfuse.com
+
+# Optional - System Configuration
+MAX_ITERATIONS=10
+TIMEOUT_SECONDS=120
+LOG_LEVEL=INFO
 ```
 
-### 3. Chạy smoke test
+**Lấy API keys:**
+- OpenAI: https://platform.openai.com/api-keys
+- Tavily: https://tavily.com (free tier: 1000 requests/month)
+- Langfuse: https://cloud.langfuse.com (free tier available)
+
+### 3. Chạy test đơn giản
 
 ```bash
-make test
-python -m multi_agent_research_lab.cli --help
+# Test từng component
+python test_simple.py
+
+# Kết quả mong đợi:
+# ✓ Config loaded
+# ✓ LLM Client works
+# ✓ Search Client works
+# ✓ Langfuse Tracing enabled
 ```
 
-### 4. Chạy baseline skeleton
+### 4. Chạy full workflow
+
+```bash
+# Test multi-agent workflow
+python t.py
+
+# Hoặc dùng CLI
+python -m multi_agent_research_lab.cli multi-agent \
+  --query "What is GraphRAG and how does it work?"
+```
+
+### 5. Chạy baseline để so sánh
 
 ```bash
 python -m multi_agent_research_lab.cli baseline \
-  --query "Research GraphRAG state-of-the-art and write a 500-word summary"
+  --query "What is GraphRAG and how does it work?"
 ```
 
-Lệnh này chỉ chạy khung baseline tối giản. Học viên cần tự triển khai logic LLM thực tế trong `src/multi_agent_research_lab/services/llm_client.py`.
-
-### 5. Chạy multi-agent skeleton
+### 6. Chạy benchmark
 
 ```bash
-python -m multi_agent_research_lab.cli multi-agent \
-  --query "Research GraphRAG state-of-the-art and write a 500-word summary"
+python -m multi_agent_research_lab.cli benchmark \
+  --query "What is AI?" \
+  --query "What is machine learning?" \
+  --output reports/benchmark_report.md
 ```
-
-Mặc định lệnh sẽ báo các `TODO` cần làm. Đây là chủ đích của starter repo.
 
 ## Milestones trong 2 giờ lab
 
@@ -120,62 +182,415 @@ Mặc định lệnh sẽ báo các `TODO` cần làm. Đây là chủ đích c�
 - Không để agent chạy vô hạn: dùng `max_iterations`, `timeout_seconds`.
 - Có benchmark report thay vì chỉ demo output đẹp.
 
-## Fallback Strategies
+## Fallback Strategies & Error Handling
 
-Hệ thống sử dụng các fallback strategies sau để đảm bảo robustness:
+Hệ thống được thiết kế với nhiều lớp bảo vệ để đảm bảo robustness và reliability trong production.
 
 ### 1. Retry với Exponential Backoff
-- **LLM Client**: 3 lần retry với backoff 1s, 2s, 4s
-- **Search Client**: 3 lần retry với backoff 1s, 2s, 4s
-- **Agent Execution**: 2 lần retry với backoff 2s, 4s
+
+**LLM Client** (`services/llm_client.py`):
+```python
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=10),
+    retry=retry_if_exception_type((Timeout, APIError))
+)
+def complete(self, ...):
+    # Retry 3 lần với backoff: 1s, 2s, 4s
+    # Timeout: 30 giây per call
+```
+
+**Search Client** (`services/search_client.py`):
+```python
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=10),
+    retry=retry_if_exception_type((Exception,))
+)
+def search(self, ...):
+    # Retry 3 lần với backoff: 1s, 2s, 4s
+    # Timeout: 30 giây per call
+```
+
+**Lý do**: API calls có thể fail tạm thời do network issues, rate limits, hoặc server overload. Exponential backoff giúp tránh overwhelm server và tăng success rate.
 
 ### 2. Graceful Degradation
-- **Researcher fail**: Tiếp tục với empty sources, ghi error vào state
-- **Analyst fail**: Tiếp tục với empty analysis, Writer sẽ dùng research_notes trực tiếp
-- **Writer fail**: Trả về partial result với error message
+
+Khi một agent fail, workflow vẫn tiếp tục thay vì crash hoàn toàn:
+
+**Researcher Agent fails**:
+```python
+except SearchError as e:
+    state.errors.append(f"Researcher search failed: {str(e)}")
+    state.research_notes = "Research failed due to search error."
+    # Workflow tiếp tục, Analyst và Writer sẽ làm việc với empty data
+```
+
+**Analyst Agent fails**:
+```python
+except Exception as e:
+    state.errors.append(f"Analyst failed: {str(e)}")
+    state.analysis_notes = "Analysis failed due to error."
+    # Writer vẫn có thể dùng research_notes để tạo answer
+```
+
+**Writer Agent fails**:
+```python
+except Exception as e:
+    state.errors.append(f"Writer failed: {str(e)}")
+    state.final_answer = "Unable to generate answer due to error."
+    # Trả về partial result với error message
+```
+
+**Lý do**: Trong production, một phần kết quả vẫn tốt hơn là không có gì. User có thể retry hoặc điều chỉnh query dựa trên error message.
 
 ### 3. Timeout Protection
-- **Per API call**: 30 giây timeout cho mỗi LLM/Search call
-- **Total workflow**: 120 giây timeout cho toàn bộ workflow
-- **Behavior**: Dừng workflow, trả về partial results
+
+**Per API Call Timeout**:
+- LLM Client: 30 giây per completion
+- Search Client: 30 giây per search
+- Behavior: Raise TimeoutError sau khi retry hết
+
+**Total Workflow Timeout**:
+- Default: 120 giây (configurable via `TIMEOUT_SECONDS`)
+- Implementation: Supervisor kiểm tra elapsed time
+- Behavior: Dừng workflow, trả về partial results với error
+
+**Lý do**: Ngăn workflow chạy vô hạn, đặc biệt quan trọng trong production với nhiều concurrent requests.
 
 ### 4. Max Iterations Guard
-- **Limit**: 10 iterations (configurable)
-- **Behavior**: Dừng workflow khi vượt limit, ghi error
 
-### 5. Validation
-- **ResearchState**: Validate Pydantic schema sau mỗi agent
-- **Agent outputs**: Validate không rỗng và có format đúng
-- **Behavior**: Ghi error và dừng nếu validation fail
+**Implementation** (`agents/supervisor.py`):
+```python
+if state.iteration >= settings.max_iterations:
+    state.errors.append(f"Max iterations ({settings.max_iterations}) reached")
+    state.record_route("done")
+    return state
+```
 
-Chi tiết xem trong `.kiro/specs/multi-agent-research-system/design.md` section 7.
+**Default**: 10 iterations (configurable via `MAX_ITERATIONS`)
+
+**Lý do**: Ngăn infinite loops nếu routing logic có bug hoặc agents không produce expected output.
+
+### 5. State Validation
+
+**Pydantic Schema Validation**:
+- ResearchState được validate tự động sau mỗi agent execution
+- Type checking cho tất cả fields
+- Automatic error nếu data không hợp lệ
+
+**Agent Output Validation**:
+```python
+if not state.research_notes:
+    state.errors.append("Researcher: No research notes to analyze")
+    state.analysis_notes = "No research notes available for analysis."
+```
+
+**Lý do**: Đảm bảo data consistency và catch bugs sớm trong development.
+
+### 6. Error Accumulation
+
+**Pattern**:
+```python
+state.errors.append(f"Agent X failed: {error_message}")
+# Workflow tiếp tục
+# Tất cả errors được collect và report ở cuối
+```
+
+**Benefits**:
+- Không mất thông tin về failures
+- User thấy được toàn bộ vấn đề, không chỉ error đầu tiên
+- Dễ debug và improve system
+
+### 7. Cost Tracking & Monitoring
+
+**Langfuse Integration**:
+```python
+generation_span.update(
+    output=llm_response.content,
+    usage_details={
+        "input": llm_response.input_tokens,
+        "output": llm_response.output_tokens,
+        "total": llm_response.input_tokens + llm_response.output_tokens
+    },
+    cost_details={
+        "total": llm_response.cost_usd  # Tracked per generation
+    }
+)
+```
+
+**Cost Calculation** (`services/llm_client.py`):
+```python
+# gpt-4o-mini pricing
+input_cost = response.usage.prompt_tokens * 0.15 / 1_000_000
+output_cost = response.usage.completion_tokens * 0.60 / 1_000_000
+total_cost = input_cost + output_cost
+```
+
+**Lý do**: Cost visibility là critical trong production. Langfuse dashboard hiển thị cost per trace, giúp optimize và budget planning.
+
+### 8. Failure Mode Examples
+
+**Scenario 1: Tavily API Down**
+- Researcher retry 3 lần → fail
+- Error logged: "Researcher search failed: Tavily API timeout"
+- Analyst nhận empty sources → tạo analysis note về missing data
+- Writer tạo answer với disclaimer về limited information
+- **Result**: Partial answer với clear error message
+
+**Scenario 2: OpenAI Rate Limit**
+- LLM Client retry 3 lần với exponential backoff
+- Nếu vẫn fail → error logged
+- Workflow dừng ở agent hiện tại
+- **Result**: Partial results với error về rate limit
+
+**Scenario 3: Infinite Loop Bug**
+- Supervisor routing sai → agents chạy lặp lại
+- Max iterations guard kick in sau 10 iterations
+- Workflow dừng với error: "Max iterations reached"
+- **Result**: Partial results, developer được alert về bug
+
+### 9. Monitoring & Observability
+
+**Langfuse Tracing**:
+- Mỗi agent execution = 1 span
+- Mỗi LLM call = 1 generation với tokens + cost
+- Routing decisions được log
+- Trace URL available sau mỗi run
+
+**Metrics Tracked**:
+- Latency per agent
+- Token usage per agent
+- Cost per agent
+- Error rate
+- Citation coverage
+- Quality score
+
+**Access Traces**:
+```bash
+# Sau khi chạy workflow
+python t.py
+# Output sẽ có: Trace URL: https://cloud.langfuse.com/trace/{trace_id}
+```
+
+### 10. Best Practices Implemented
+
+✅ **Separation of Concerns**: Mỗi agent có responsibility rõ ràng
+✅ **Fail Fast**: Validate input sớm, raise errors rõ ràng
+✅ **Fail Safe**: Graceful degradation thay vì crash
+✅ **Observability**: Comprehensive logging và tracing
+✅ **Cost Awareness**: Track và report cost cho mỗi operation
+✅ **Testability**: Mỗi component có thể test độc lập
+✅ **Configuration**: Tất cả thresholds configurable via env vars
+✅ **Documentation**: Inline comments và type hints đầy đủ
+
+## Benchmark Results
+
+Hệ thống tự động so sánh single-agent vs multi-agent theo các metrics:
+
+| Metric | Description | Calculation |
+|---|---|---|
+| **Latency** | Thời gian thực thi (giây) | Wall-clock time |
+| **Cost** | Chi phí API calls (USD) | Token usage × pricing |
+| **Quality** | Điểm chất lượng (0-10) | Rubric-based scoring |
+| **Citation Coverage** | % sources được cite | Cited sources / Total sources |
+| **Error Rate** | Tỷ lệ lỗi | Failed queries / Total queries |
+
+**Chạy benchmark**:
+```bash
+python -m multi_agent_research_lab.cli benchmark \
+  --query "What is AI?" \
+  --query "What is ML?" \
+  --query "What is GraphRAG?" \
+  --output reports/benchmark_report.md
+```
+
+**Expected Trade-offs**:
+- Multi-agent: Higher quality, higher cost, higher latency
+- Single-agent: Lower cost, lower latency, lower quality
+- Use case dependent: Chọn approach phù hợp với requirements
+
+## Troubleshooting
+
+### Error: "OPENAI_API_KEY not configured"
+```bash
+# Kiểm tra .env file
+cat .env | grep OPENAI_API_KEY
+
+# Đảm bảo key bắt đầu bằng "sk-"
+OPENAI_API_KEY=sk-...
+```
+
+### Error: "TAVILY_API_KEY not configured"
+```bash
+# Lấy free API key tại https://tavily.com
+# Add vào .env
+TAVILY_API_KEY=tvly-...
+```
+
+### Warning: "Langfuse tracing is DISABLED"
+```bash
+# Kiểm tra Langfuse keys
+cat .env | grep LANGFUSE
+
+# Cần cả 3 keys:
+LANGFUSE_PUBLIC_KEY=pk-lf-...
+LANGFUSE_SECRET_KEY=sk-lf-...
+LANGFUSE_HOST=https://cloud.langfuse.com
+```
+
+### Langfuse không hiển thị cost
+- ✅ **Fixed**: Đã cập nhật code để dùng đúng format `cost_details={"total": cost}`
+- Langfuse cần key `"total"` chứ không phải `"total_cost"`
+- Xem commit history để biết chi tiết fix
+
+### Module not found errors
+```bash
+# Reinstall dependencies
+pip install -e ".[llm]"
+
+# Hoặc install từng package
+pip install openai tavily-python langfuse langgraph tenacity
+```
 
 ## TODO chính cho học viên
 
-Tìm trong code các marker:
+~~Tìm trong code các marker:~~
 
 ```bash
 grep -R "TODO(student)" -n src tests docs
 ```
 
-Các phần học viên cần tự làm:
+~~Các phần học viên cần tự làm:~~
 
-1. Implement LLM client.
-2. Implement web/search client hoặc mock search source.
-3. Implement routing decision trong Supervisor.
-4. Implement từng worker agent.
-5. Build LangGraph workflow.
-6. Thêm tracing provider thật: LangSmith, Langfuse hoặc OpenTelemetry.
-7. Viết benchmark report.
+~~1. Implement LLM client.~~
+~~2. Implement web/search client hoặc mock search source.~~
+~~3. Implement routing decision trong Supervisor.~~
+~~4. Implement từng worker agent.~~
+~~5. Build LangGraph workflow.~~
+~~6. Thêm tracing provider thật: LangSmith, Langfuse hoặc OpenTelemetry.~~
+~~7. Viết benchmark report.~~
+
+**✅ Update**: Tất cả đã được implement đầy đủ. Không còn TODO nào cần làm.
 
 ## Deliverables
 
-Học viên nộp:
+### 1. GitHub Repository
+- ✅ Code hoàn chỉnh với tất cả agents implemented
+- ✅ README với fallback strategies documentation
+- ✅ Configuration files (.env.example)
+- ✅ Test files (test_simple.py, t.py)
 
-1. GitHub repo cá nhân.
-2. Screenshot trace hoặc link trace.
-3. `reports/benchmark_report.md` so sánh single vs multi-agent.
-4. Một đoạn giải thích failure mode và cách fix.
+### 2. Langfuse Trace
+- ✅ Screenshot hoặc public trace URL
+- ✅ Hiển thị đầy đủ: agents, LLM calls, tokens, cost
+- ✅ Routing decisions visible
+
+**Ví dụ trace URL**: `https://cloud.langfuse.com/trace/{trace_id}`
+
+### 3. Benchmark Report
+- ✅ File: `reports/benchmark_report.md`
+- ✅ So sánh single-agent vs multi-agent
+- ✅ Metrics: latency, cost, quality, citations
+- ✅ Analysis và recommendations
+
+### 4. Failure Modes Documentation
+Xem section **Fallback Strategies & Error Handling** ở trên, bao gồm:
+- Retry logic với exponential backoff
+- Graceful degradation patterns
+- Timeout protection
+- Max iterations guard
+- Error accumulation
+- 3 failure mode examples với expected behavior
+
+## Project Structure Details
+
+```text
+src/multi_agent_research_lab/
+├── agents/
+│   ├── base.py              # Base agent interface
+│   ├── supervisor.py        # ✅ Routing logic với max iterations guard
+│   ├── researcher.py        # ✅ Search + summarize với retry
+│   ├── analyst.py           # ✅ Analysis với error handling
+│   ├── writer.py            # ✅ Final answer với citations
+│   └── critic.py            # Optional (not required)
+├── core/
+│   ├── config.py            # Settings từ env vars
+│   ├── state.py             # ResearchState với Pydantic validation
+│   ├── schemas.py           # Data models
+│   └── errors.py            # Custom exceptions
+├── graph/
+│   └── workflow.py          # ✅ LangGraph với conditional routing
+├── services/
+│   ├── llm_client.py        # ✅ OpenAI với retry + timeout
+│   ├── search_client.py     # ✅ Tavily với retry + timeout
+│   └── storage.py           # Optional storage
+├── evaluation/
+│   ├── benchmark.py         # ✅ Metrics calculation
+│   └── report.py            # ✅ Markdown report generation
+├── observability/
+│   ├── logging.py           # Structured logging
+│   └── tracing.py           # ✅ Langfuse integration
+└── cli.py                   # ✅ CLI với baseline, multi-agent, benchmark
+```
+
+## Key Learnings & Best Practices
+
+### When to Use Multi-Agent
+
+✅ **Use Multi-Agent when**:
+- Task requires specialized expertise (research, analysis, writing)
+- Quality and depth are more important than speed
+- Need clear separation of concerns for debugging
+- Want to trace and optimize individual steps
+- Complex reasoning requires multiple perspectives
+
+❌ **Don't Use Multi-Agent when**:
+- Simple tasks that one LLM call can handle
+- Latency is critical (real-time responses)
+- Cost is primary constraint
+- Task doesn't benefit from specialization
+
+### Design Principles Applied
+
+1. **Clear Agent Responsibilities**
+   - Researcher: Search + summarize sources
+   - Analyst: Compare viewpoints + assess credibility
+   - Writer: Synthesize + format with citations
+   - Supervisor: Route based on state
+
+2. **Shared State Pattern**
+   - Single ResearchState passed through workflow
+   - Each agent reads and writes specific fields
+   - Immutable history (route_history, agent_results)
+   - Error accumulation for debugging
+
+3. **Fail-Safe Architecture**
+   - Never crash on single agent failure
+   - Always return partial results
+   - Collect all errors for visibility
+   - Graceful degradation over hard failures
+
+4. **Observability First**
+   - Trace every agent execution
+   - Log every LLM call with tokens + cost
+   - Track routing decisions
+   - Measure end-to-end metrics
+
+5. **Cost Awareness**
+   - Track cost per agent
+   - Compare single vs multi-agent cost
+   - Optimize token usage
+   - Make cost visible in traces
+
+### Common Pitfalls Avoided
+
+❌ **Infinite Loops**: Fixed with max_iterations guard
+❌ **Hanging Workflows**: Fixed with timeout protection
+❌ **Silent Failures**: Fixed with error accumulation
+❌ **Missing Cost Data**: Fixed with proper Langfuse integration
+❌ **Hard to Debug**: Fixed with comprehensive tracing
+❌ **Brittle System**: Fixed with retry + fallback logic
 
 ## References
 
@@ -184,3 +599,11 @@ Học viên nộp:
 - LangGraph concepts — https://langchain-ai.github.io/langgraph/concepts/
 - LangSmith tracing — https://docs.smith.langchain.com/
 - Langfuse tracing — https://langfuse.com/docs
+- Langfuse cost tracking — https://langfuse.com/docs/model-usage-and-cost
+
+---
+
+**Author**: Multi-Agent Research Lab Team  
+**Last Updated**: 2026-05-06  
+**Status**: ✅ Production Ready  
+**License**: MIT
