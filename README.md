@@ -59,6 +59,345 @@ Supervisor / Router
 Trace + Benchmark Report
 ```
 
+## System Architecture
+
+### High-Level Architecture
+
+```text
+┌─────────────────────────────────────────────────────────────────┐
+│                         User Interface                           │
+│                    (CLI / API / Notebook)                        │
+└────────────────────────────┬────────────────────────────────────┘
+                             │
+                             ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                      Workflow Orchestrator                       │
+│                        (LangGraph)                               │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │                    Supervisor Agent                       │  │
+│  │  • Routing Logic                                          │  │
+│  │  • Max Iterations Guard                                   │  │
+│  │  • State Management                                       │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│                             │                                    │
+│         ┌───────────────────┼───────────────────┐               │
+│         ▼                   ▼                   ▼               │
+│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐        │
+│  │ Researcher  │    │  Analyst    │    │   Writer    │        │
+│  │   Agent     │    │   Agent     │    │   Agent     │        │
+│  └─────────────┘    └─────────────┘    └─────────────┘        │
+└─────────────────────────────────────────────────────────────────┘
+                             │
+         ┌───────────────────┼───────────────────┐
+         ▼                   ▼                   ▼
+┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐
+│  LLM Service    │  │ Search Service  │  │ Trace Service   │
+│   (OpenAI)      │  │   (Tavily)      │  │  (Langfuse)     │
+└─────────────────┘  └─────────────────┘  └─────────────────┘
+```
+
+### Agent Architecture Details
+
+#### 1. Supervisor Agent (Router)
+
+**Responsibility**: Điều phối workflow và quyết định agent nào chạy tiếp theo
+
+**Routing Logic**:
+```python
+if state.final_answer is not None:
+    route = "done"
+elif state.research_notes is None:
+    route = "researcher"
+elif state.analysis_notes is None:
+    route = "analyst"
+elif state.final_answer is None:
+    route = "writer"
+```
+
+**Guardrails**:
+- Max iterations check (default: 10)
+- Route history tracking
+- Error accumulation
+
+**Input**: ResearchState
+**Output**: ResearchState với updated route_history
+
+---
+
+#### 2. Researcher Agent
+
+**Responsibility**: Tìm kiếm thông tin và tạo research notes
+
+**Workflow**:
+```text
+1. Search Query → Tavily API
+2. Get Sources (title, url, snippet)
+3. Summarize Sources → LLM
+4. Update state.sources + state.research_notes
+```
+
+**Key Features**:
+- Retry logic: 3 attempts với exponential backoff
+- Timeout: 30s per API call
+- Graceful degradation: Continue với empty sources nếu search fail
+
+**Input**: 
+- `state.request.query`
+- `state.request.max_sources`
+
+**Output**:
+- `state.sources`: List[SourceDocument]
+- `state.research_notes`: str
+
+**Error Handling**:
+```python
+try:
+    sources = search_client.search(query, max_results)
+    research_notes = llm_client.complete(summarize_prompt)
+except SearchError:
+    state.errors.append("Search failed")
+    state.research_notes = "Research failed due to search error."
+```
+
+---
+
+#### 3. Analyst Agent
+
+**Responsibility**: Phân tích research notes và đánh giá sources
+
+**Workflow**:
+```text
+1. Read research_notes + sources
+2. Analyze → LLM:
+   - Compare viewpoints
+   - Assess credibility
+   - Identify weak evidence
+   - Highlight key insights
+3. Update state.analysis_notes
+```
+
+**Key Features**:
+- Critical analysis với multiple perspectives
+- Source credibility assessment
+- Gap identification
+
+**Input**:
+- `state.research_notes`
+- `state.sources`
+
+**Output**:
+- `state.analysis_notes`: str
+
+**Error Handling**:
+```python
+if not state.research_notes:
+    state.errors.append("No research notes to analyze")
+    state.analysis_notes = "No research notes available."
+```
+
+---
+
+#### 4. Writer Agent
+
+**Responsibility**: Tổng hợp thông tin và viết final answer với citations
+
+**Workflow**:
+```text
+1. Read research_notes + analysis_notes + sources
+2. Write Final Answer → LLM:
+   - Synthesize information
+   - Add citations [1], [2], etc.
+   - Format for target audience
+3. Update state.final_answer
+```
+
+**Key Features**:
+- Citation formatting
+- Audience-aware writing
+- Comprehensive synthesis
+
+**Input**:
+- `state.research_notes`
+- `state.analysis_notes`
+- `state.sources`
+- `state.request.audience`
+
+**Output**:
+- `state.final_answer`: str với citations
+
+**Citation Format**:
+```text
+GraphRAG is a retrieval-augmented generation approach [1]. 
+It uses knowledge graphs to improve context [2].
+
+Sources:
+[1] Microsoft Research: GraphRAG Overview
+[2] ArXiv: Knowledge Graph RAG
+```
+
+---
+
+### Shared State (ResearchState)
+
+**Core Fields**:
+```python
+class ResearchState(TypedDict):
+    # Input
+    request: ResearchQuery          # User query + config
+    
+    # Agent Outputs
+    sources: List[SourceDocument]   # From Researcher
+    research_notes: Optional[str]   # From Researcher
+    analysis_notes: Optional[str]   # From Analyst
+    final_answer: Optional[str]     # From Writer
+    
+    # Workflow Control
+    iteration: int                  # Current iteration count
+    route_history: List[str]        # ["researcher", "analyst", "writer"]
+    
+    # Observability
+    agent_results: List[AgentResult]  # Metadata per agent
+    errors: List[str]                 # Accumulated errors
+    trace_id: Optional[str]           # Langfuse trace ID
+```
+
+**State Transitions**:
+```text
+Initial State:
+  iteration=0, route_history=[], all outputs=None
+
+After Researcher:
+  sources=[...], research_notes="...", route_history=["researcher"]
+
+After Analyst:
+  analysis_notes="...", route_history=["researcher", "analyst"]
+
+After Writer:
+  final_answer="...", route_history=["researcher", "analyst", "writer"]
+
+Final State:
+  route_history=[..., "done"], iteration=3
+```
+
+---
+
+### Service Layer
+
+#### LLM Client (OpenAI)
+
+**Features**:
+- Model: gpt-4o-mini (configurable)
+- Retry: 3 attempts, exponential backoff
+- Timeout: 30s per call
+- Cost tracking: $0.15/1M input, $0.60/1M output tokens
+
+**Interface**:
+```python
+def complete(
+    system_prompt: str,
+    user_prompt: str,
+    temperature: float = 0.7,
+    max_tokens: int = 2000
+) -> LLMResponse:
+    # Returns: content, input_tokens, output_tokens, cost_usd, latency
+```
+
+#### Search Client (Tavily)
+
+**Features**:
+- Search depth: advanced
+- Retry: 3 attempts, exponential backoff
+- Timeout: 30s per call
+- Max results: configurable (default: 5)
+
+**Interface**:
+```python
+def search(
+    query: str,
+    max_results: int = 5
+) -> List[SourceDocument]:
+    # Returns: title, url, snippet, metadata
+```
+
+#### Trace Client (Langfuse)
+
+**Features**:
+- Automatic span creation per agent
+- LLM call tracking với tokens + cost
+- Public trace URLs
+- Cost aggregation
+
+**Integration**:
+```python
+@observe(name="agent_name", as_type="span")
+def run(self, state):
+    with langfuse_client.start_as_current_observation(
+        name="llm_call",
+        as_type="generation"
+    ) as generation_span:
+        response = llm_client.complete(...)
+        generation_span.update(
+            output=response.content,
+            usage_details={"input": ..., "output": ..., "total": ...},
+            cost_details={"total": response.cost_usd}
+        )
+```
+
+---
+
+### Workflow Execution Flow
+
+```text
+1. User submits query
+   ↓
+2. Create initial ResearchState
+   ↓
+3. Supervisor: route = "researcher"
+   ↓
+4. Researcher Agent:
+   - Search Tavily
+   - Summarize with LLM
+   - Update state
+   ↓
+5. Supervisor: route = "analyst"
+   ↓
+6. Analyst Agent:
+   - Analyze research_notes
+   - Update state
+   ↓
+7. Supervisor: route = "writer"
+   ↓
+8. Writer Agent:
+   - Write final_answer
+   - Update state
+   ↓
+9. Supervisor: route = "done"
+   ↓
+10. Return final ResearchState
+    ↓
+11. Display results + trace URL
+```
+
+**Conditional Routing**:
+- LangGraph conditional edges based on `state.route_history[-1]`
+- Each worker agent returns to Supervisor
+- Supervisor decides next step or "done"
+
+---
+
+### Comparison: Single-Agent vs Multi-Agent
+
+| Aspect | Single-Agent | Multi-Agent |
+|---|---|---|
+| **Architecture** | 1 LLM call | 3+ LLM calls |
+| **Prompt** | Monolithic | Specialized per agent |
+| **Latency** | Lower (~5-10s) | Higher (~15-30s) |
+| **Cost** | Lower (~$0.01) | Higher (~$0.03-0.05) |
+| **Quality** | Good | Better (specialized) |
+| **Debuggability** | Hard | Easy (per-agent traces) |
+| **Scalability** | Limited | High (add more agents) |
+| **Use Case** | Simple queries | Complex research |
+
 ## Cấu trúc repo
 
 ```text
