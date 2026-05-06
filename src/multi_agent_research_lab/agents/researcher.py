@@ -27,7 +27,7 @@ class ResearcherAgent(BaseAgent):
         self.llm_client = llm_client
         self.search_client = search_client
 
-    @observe(name="researcher_agent")
+    @observe(name="researcher_agent", as_type="span")
     def run(self, state: ResearchState) -> ResearchState:
         """Populate `state.sources` and `state.research_notes`.
         
@@ -61,11 +61,35 @@ Sources:
 
 Provide a detailed summary that captures key information from all sources. Be factual and cite which sources support each point."""
                 
-                llm_response = self.llm_client.complete(
-                    system_prompt=system_prompt,
-                    user_prompt=user_prompt,
-                    max_tokens=1500
-                )
+                # Call LLM with Langfuse tracing
+                from langfuse import get_client
+                langfuse_client = get_client()
+                
+                # Create a generation span for the LLM call
+                with langfuse_client.start_as_current_observation(
+                    name="summarize_sources",
+                    as_type="generation",
+                    input={"system": system_prompt, "user": user_prompt},
+                    model="gpt-4o-mini"
+                ) as generation_span:
+                    llm_response = self.llm_client.complete(
+                        system_prompt=system_prompt,
+                        user_prompt=user_prompt,
+                        max_tokens=1500
+                    )
+                    
+                    # Update generation span with output, usage, and cost
+                    generation_span.update(
+                        output=llm_response.content,
+                        usage_details={
+                            "input_tokens": llm_response.input_tokens,
+                            "output_tokens": llm_response.output_tokens,
+                            "total_tokens": llm_response.input_tokens + llm_response.output_tokens
+                        },
+                        cost_details={
+                            "total_cost": llm_response.cost_usd
+                        }
+                    )
                 
                 state.research_notes = llm_response.content
                 
